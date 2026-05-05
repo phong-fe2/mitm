@@ -58,7 +58,8 @@ jobs:
                 const context = await browser.newContext({ ignoreHTTPSErrors: true });
                 const page = await context.newPage();
                 try {
-                  await page.goto(site.url, { waitUntil: 'networkidle', timeout: 30000 });
+                  await page.goto(site.url, { waitUntil: 'load', timeout: 30000 });
+                await page.waitForTimeout(2000);
                   console.log('Captured: ' + site.name + '.mitm');
                 } catch (e) {
                   console.log('Error capturing ' + site.url + ': ' + e.message);
