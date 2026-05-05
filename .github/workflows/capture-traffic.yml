@@ -1,0 +1,50 @@
+name: Capture Network Traffic with mitmproxy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install mitmproxy
+        run: |
+          pip install mitmproxy
+
+      - name: Start mitmproxy
+        run: |
+          nohup mitmdump -w apple.mitm &
+          sleep 3
+
+      - name: Install Playwright browsers
+        run: |
+          npx playwright install chromium
+
+      - name: Capture traffic with Playwright
+        run: |
+          node -e "
+            const { chromium } = require('playwright');
+            (async () => {
+              const browser = await chromium.launch({
+                args: ['--proxy-server=http://127.0.0.1:8080']
+              });
+              const page = await browser.newPage();
+              await page.goto('https://apple.com', { waitUntil: 'networkidle' });
+              await browser.close();
+            })();
+          "
+
+      - name: Stop mitmproxy
+        run: |
+          pkill mitmdump || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-mitm-capture
+          path: apple.mitm
