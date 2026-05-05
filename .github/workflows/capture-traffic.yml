@@ -21,8 +21,9 @@ jobs:
           nohup mitmdump -w apple.mitm &
           sleep 3
 
-      - name: Install Playwright browsers
+      - name: Install Playwright
         run: |
+          npm install playwright
           npx playwright install chromium
 
       - name: Capture traffic with Playwright
