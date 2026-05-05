@@ -12,41 +12,70 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install mitmproxy
+      - name: Install mitmproxy and Playwright
         run: |
           pip install mitmproxy
-
-      - name: Start mitmproxy
-        run: |
-          nohup mitmdump -w apple.mitm &
-          sleep 3
-
-      - name: Install Playwright
-        run: |
           npm install playwright
           npx playwright install chromium
 
-      - name: Capture traffic with Playwright
+      - name: Capture traffic for all websites
         run: |
           node -e "
             const { chromium } = require('playwright');
-            (async () => {
-              const browser = await chromium.launch({
-                args: ['--proxy-server=http://127.0.0.1:8080', '--ignore-certificate-errors']
+            const { exec } = require('child_process');
+
+            const sites = [
+              { name: 'apple', url: 'https://apple.com' },
+              { name: 'samsung', url: 'https://samsung.com' },
+              { name: 'github', url: 'https://github.com' },
+              { name: 'google', url: 'https://google.com' },
+              { name: 'quiz', url: 'https://quiz.com' }
+            ];
+
+            const runCommand = (cmd) => new Promise((resolve) => {
+              exec(cmd, (err, stdout, stderr) => {
+                if (err && !err.killed) console.error(stderr);
+                resolve();
               });
-              const context = await browser.newContext({ ignoreHTTPSErrors: true });
-              const page = await context.newPage();
-              await page.goto('https://apple.com', { waitUntil: 'networkidle' });
-              await browser.close();
+            });
+
+            (async () => {
+              for (const site of sites) {
+                console.log('Capturing: ' + site.url);
+
+                // Stop any existing mitmdump
+                await runCommand('pkill mitmdump || true');
+                await new Promise(r => setTimeout(r, 500));
+
+                // Start mitmproxy
+                await runCommand('nohup mitmdump -w ' + site.name + '.mitm > /dev/null 2>&1 &');
+                await new Promise(r => setTimeout(r, 3000));
+
+                // Access site with Playwright
+                const browser = await chromium.launch({
+                  args: ['--proxy-server=http://127.0.0.1:8080', '--ignore-certificate-errors']
+                });
+                const context = await browser.newContext({ ignoreHTTPSErrors: true });
+                const page = await context.newPage();
+                try {
+                  await page.goto(site.url, { waitUntil: 'networkidle', timeout: 30000 });
+                  console.log('Captured: ' + site.name + '.mitm');
+                } catch (e) {
+                  console.log('Error capturing ' + site.url + ': ' + e.message);
+                }
+                await browser.close();
+
+                // Stop mitmproxy
+                await runCommand('pkill mitmdump || true');
+                await new Promise(r => setTimeout(r, 500));
+              }
+              console.log('All captures completed');
             })();
           "
 
-      - name: Stop mitmproxy
-        run: |
-          pkill mitmdump || true
-
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apple-mitm-capture
-          path: apple.mitm
+          name: mitm-captures
+          path: |
+            *.mitm
