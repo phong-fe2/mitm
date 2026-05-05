@@ -32,9 +32,10 @@ jobs:
             const { chromium } = require('playwright');
             (async () => {
               const browser = await chromium.launch({
-                args: ['--proxy-server=http://127.0.0.1:8080']
+                args: ['--proxy-server=http://127.0.0.1:8080', '--ignore-certificate-errors']
               });
-              const page = await browser.newPage();
+              const context = await browser.newContext({ ignoreHTTPSErrors: true });
+              const page = await context.newPage();
               await page.goto('https://apple.com', { waitUntil: 'networkidle' });
               await browser.close();
             })();
