@@ -3,7 +3,7 @@ name: Capture Network Traffic with mitmproxy
 on:
   push:
     branches:
-      - main
+      - phong
 
 jobs:
   capture:

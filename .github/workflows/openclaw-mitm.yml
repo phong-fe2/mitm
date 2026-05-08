@@ -1,0 +1,188 @@
+name: Capture Website Network Requests
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  capture-network:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install mitmproxy and Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install mitmproxy
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
+
+      - name: Create browser capture script
+        run: |
+          cat > capture-page.js <<'EOF'
+          const { chromium } = require('playwright');
+
+          const url = process.argv[2];
+
+          if (!url) {
+            console.error('Missing URL');
+            process.exit(1);
+          }
+
+          (async () => {
+            const browser = await chromium.launch({
+              headless: true,
+              args: [
+                '--proxy-server=http://127.0.0.1:8080',
+                '--ignore-certificate-errors',
+                '--ignore-certificate-errors-spki-list',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
+              ]
+            });
+
+            const context = await browser.newContext({
+              ignoreHTTPSErrors: true,
+              viewport: {
+                width: 1366,
+                height: 768
+              },
+              userAgent:
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ' +
+                '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            });
+
+            const page = await context.newPage();
+
+            try {
+              await page.goto(url, {
+                waitUntil: 'networkidle',
+                timeout: 60000
+              });
+
+              // Scroll nhẹ để trigger lazy-loaded requests
+              await page.evaluate(async () => {
+                await new Promise(resolve => {
+                  let totalHeight = 0;
+                  const distance = 500;
+                  const timer = setInterval(() => {
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+
+                    if (totalHeight >= document.body.scrollHeight) {
+                      clearInterval(timer);
+                      resolve();
+                    }
+                  }, 300);
+                });
+              });
+
+              await page.waitForTimeout(5000);
+            } catch (error) {
+              console.error(`Failed to capture ${url}`);
+              console.error(error);
+            } finally {
+              await browser.close();
+            }
+          })();
+          EOF
+
+      - name: Capture network requests with mitmproxy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p mitm-captures
+          mkdir -p mitm-logs
+
+          sites=(
+            "apple|https://apple.com"
+            "samsung|https://samsung.com"
+            "github|https://github.com"
+            "google|https://google.com"
+            "quiz|https://quiz.com"
+          )
+
+          for item in "${sites[@]}"; do
+            name="${item%%|*}"
+            url="${item##*|}"
+
+            output_file="mitm-captures/${name}.mitm"
+            log_file="mitm-logs/${name}.log"
+
+            echo "========================================"
+            echo "Capturing: ${url}"
+            echo "Output: ${output_file}"
+            echo "========================================"
+
+            rm -f "$output_file"
+
+            mitmdump \
+              --listen-host 127.0.0.1 \
+              --listen-port 8080 \
+              --set block_global=false \
+              --set connection_strategy=lazy \
+              -w "$output_file" \
+              > "$log_file" 2>&1 &
+
+            mitm_pid=$!
+
+            # Wait until mitmproxy is ready
+            python - <<'PY'
+          import socket
+          import time
+          import sys
+
+          for _ in range(60):
+              try:
+                  with socket.create_connection(("127.0.0.1", 8080), timeout=1):
+                      sys.exit(0)
+              except OSError:
+                  time.sleep(1)
+
+          print("mitmproxy did not start in time", file=sys.stderr)
+          sys.exit(1)
+          PY
+
+            # Visit page through proxy
+            node capture-page.js "$url" || true
+
+            # Stop mitmproxy gracefully so the .mitm file is flushed
+            kill -INT "$mitm_pid" || true
+            wait "$mitm_pid" || true
+
+            if [ -f "$output_file" ]; then
+              echo "Created $output_file"
+              ls -lh "$output_file"
+            else
+              echo "Warning: $output_file was not created"
+            fi
+
+            sleep 2
+          done
+
+      - name: Upload mitm capture artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitm-network-captures
+          path: |
+            mitm-captures/*.mitm
+            mitm-logs/*.log
+          if-no-files-found: error
+          retention-days: 7
